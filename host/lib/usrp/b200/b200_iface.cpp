@@ -34,6 +34,13 @@
 #include <iomanip>
 #include <libusb.h>
 
+#if ANDROID
+#include <android/log.h>
+#define ALOG(x) __android_log_print(ANDROID_LOG_VERBOSE, "uhd::b200_iface", x);
+#else
+#define ALOG(x)
+#endif
+
 //! libusb_error_name is only in newer API
 #ifndef HAVE_LIBUSB_ERROR_NAME
     #define libusb_error_name(code) \
@@ -201,19 +208,27 @@ public:
                          (unsigned char*) &recv_bytes[0],
                          num_bytes);
 
-        if (bytes_read < 0)
+        if (bytes_read < 0) {
+            ALOG("throw: Failed to read EEPROM");
             throw uhd::io_error((boost::format("Failed to read EEPROM (%d: %s)") % bytes_read % libusb_error_name(bytes_read)).str());
-        else if ((size_t)bytes_read != num_bytes)
+        }
+        else if ((size_t)bytes_read != num_bytes) {
+            ALOG("throw: Short read from EEPROM");
             throw uhd::io_error((boost::format("Short read on read EEPROM (expecting: %d, returned: %d)") % num_bytes % bytes_read).str());
+        }
 
+        ALOG("read_eeprom: returning");
         return recv_bytes;
     }
 
     void load_firmware(const std::string filestring, UHD_UNUSED(bool force) = false)
     {
-        if (load_img_msg)
+        ALOG("load_firmware: For EOF record, address must be 0, length 0");
+        if (load_img_msg) {
+            ALOG("load_firmwareimage");
             UHD_MSG(status) << "Loading firmware image: "
                             << filestring << "..." << std::flush;
+        }
 
         ihex_reader file_reader(filestring);
         try {
@@ -403,10 +418,19 @@ public:
         // Make sure that if operating as USB2, requested length is within spec
         int ntoread = std::min(transfer_size, (int)sizeof(out_buff));
         int nread = fx3_control_read(B200_VREQ_LOOP, 0, 0, out_buff, ntoread, 1000);
-        if (nread < 0)
+        if (nread < 0) {
+            ALOG(boost::str
+                 (boost::format("load_fpga: unable to complete firmware loopback request (%d: %s)") \
+                  % nread % libusb_error_name(nread)).c_str());
             throw uhd::io_error((boost::format("load_fpga: unable to complete firmware loopback request (%d: %s)") % nread % libusb_error_name(nread)).str());
-        else if (nread != ntoread)
+        }
+        else if (nread != ntoread) {
+            ALOG(boost::str
+                 (boost::format("load_fpga: short read on firmware loopback request (expecting: %d, returned: %d)") \
+                  % ntoread % nread).c_str());
             throw uhd::io_error((boost::format("load_fpga: short read on firmware loopback request (expecting: %d, returned: %d)") % ntoread % nread).str());
+        }
+
         transfer_size = std::min(transfer_size, nread); // Select the smaller value
 
         size_t file_size = 0;
@@ -419,6 +443,9 @@ public:
         file.open(filename, std::ios::in | std::ios::binary);
 
         if (!file.good()) {
+            ALOG(boost::str
+                 (boost::format("load_fpga: cannot open FGPA input file %1%") \
+                  % filename).c_str());
             throw uhd::io_error("load_fpga: cannot open FPGA input file.");
         }
 
@@ -428,10 +455,18 @@ public:
         memset(out_buff, 0x00, sizeof(out_buff));
         bytes_to_xfer = 1;
         ret = fx3_control_write(B200_VREQ_FPGA_CONFIG, 0, 0, out_buff, bytes_to_xfer, 1000);
-        if (ret < 0)
+        if (ret < 0) {
+            ALOG(boost::str
+                 (boost::format("Failed to start FPGA config (%d: %s)") \
+                  % ret % libusb_error_name(ret)).c_str());
             throw uhd::io_error((boost::format("Failed to start FPGA config (%d: %s)") % ret % libusb_error_name(ret)).str());
-        else if (ret != bytes_to_xfer)
+        }
+        else if (ret != bytes_to_xfer) {
+            ALOG(boost::str
+                 (boost::format("Short write on start FPGA config (expecting: %d, returned: %d)") \
+                 % bytes_to_xfer % ret).c_str());
             throw uhd::io_error((boost::format("Short write on start FPGA config (expecting: %d, returned: %d)") % bytes_to_xfer % ret).str());
+        }
 
         wait_count = 0;
         do {

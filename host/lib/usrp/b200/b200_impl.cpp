@@ -39,6 +39,15 @@
 
 #include "../../transport/libusb1_base.hpp"
 
+#if ANDROID
+#include <android/log.h>
+#ifndef ALOG
+#define ALOG(x) __android_log_print(ANDROID_LOG_VERBOSE, "uhd::b200_impl", x);
+#endif
+#else
+#define ALOG(x)
+#endif
+
 using namespace uhd;
 using namespace uhd::usrp;
 using namespace uhd::transport;
@@ -47,6 +56,7 @@ static const boost::posix_time::milliseconds REENUMERATION_TIMEOUT_MS(3000);
 
 usb_control::sptr get_usb_control(usb_device_handle::sptr handle)
 {
+    ALOG("calling usb_control::make");
     static usb_control::sptr _control = usb_control::make(handle, 0);
     return _control;
 }
@@ -318,7 +328,9 @@ static device::sptr b200_make(const device_addr_t &device_addr)
 
 UHD_STATIC_BLOCK(register_b200_device)
 {
+    ALOG("Registering B200");
     device::register_device(&b200_find, &b200_make, device::USRP);
+    ALOG("    Registered");
 }
 
 /***********************************************************************
@@ -330,9 +342,13 @@ b200_impl::b200_impl(const uhd::device_addr_t& device_addr, usb_device_handle::s
     _time_source(UNKNOWN),
     _tick_rate(0.0) // Forces a clock initialization at startup
 {
+    ALOG("B200 impl ctor entered");
+
     _tree = property_tree::make();
     _type = device::USRP;
     const fs_path mb_path = "/mboards/0";
+
+    ALOG("Got Property Tree");
 
     //try to match the given device address with something on the USB bus
     boost::uint16_t vid = B200_VENDOR_ID;
@@ -431,6 +447,7 @@ b200_impl::b200_impl(const uhd::device_addr_t& device_addr, usb_device_handle::s
     std::vector<usb_device_handle::sptr> device_list = usb_device_handle::get_device_list(vid_pid_pair_list);
 
     //locate the matching handle in the device list
+    ALOG("Locate matching handle in device list");
     BOOST_FOREACH(usb_device_handle::sptr dev_handle, device_list) {
         try {
             if (dev_handle->get_serial() == device_addr["serial"]){
@@ -442,17 +459,23 @@ b200_impl::b200_impl(const uhd::device_addr_t& device_addr, usb_device_handle::s
     UHD_ASSERT_THROW(handle.get() != NULL); //better be found
 
     //create control objects
+    ALOG("Create USB control object");
     usb_control::sptr control = usb_control::make(handle, 0);
+    ALOG("Make B2xx interface");
     _iface = b200_iface::make(control);
 
 #if ANDROID
     ////////////////////////////////////////////////////////////////////
     // load the device firmware
     ////////////////////////////////////////////////////////////////////
+    ALOG("Loading B2xx Firmware");
     std::string b200_fw_image = B200_FW_FILE_NAME;
     if(!(handle->firmware_loaded())) {
+      ALOG("Loading Firmware");
       _iface->load_firmware(b200_fw_image);
+      ALOG("    ... loaded");
     }
+    ALOG("Firmware loaded; compat check");
 #endif
 
     this->check_fw_compat(); //check after making
@@ -460,6 +483,7 @@ b200_impl::b200_impl(const uhd::device_addr_t& device_addr, usb_device_handle::s
     ////////////////////////////////////////////////////////////////////
     // setup the mboard eeprom
     ////////////////////////////////////////////////////////////////////
+    ALOG("Setting up mb_eeprom interface");
     const mboard_eeprom_t mb_eeprom(*_iface, "B200");
     _tree->create<mboard_eeprom_t>(mb_path / "eeprom")
         .set(mb_eeprom)
@@ -468,6 +492,7 @@ b200_impl::b200_impl(const uhd::device_addr_t& device_addr, usb_device_handle::s
     ////////////////////////////////////////////////////////////////////
     // Identify the device type
     ////////////////////////////////////////////////////////////////////
+    ALOG("Getting product info from mb_eeprom");
     std::string default_file_name;
     std::string product_name;
     try {
@@ -527,12 +552,19 @@ b200_impl::b200_impl(const uhd::device_addr_t& device_addr, usb_device_handle::s
     );
 #endif
 
+    ALOG(boost::str
+         (boost::format("Loading FPGA file: %1%")   \
+          % b200_fpga_image).c_str());
     boost::uint32_t status = _iface->load_fpga(b200_fpga_image);
 
     if(status != 0) {
+        ALOG(boost::str
+             (boost::format("fx3 is in state: %1%")     \
+              % status).c_str());
         throw uhd::runtime_error(str(boost::format("fx3 is in state %1%") % status));
     }
 
+    ALOG("Reset GPIF");
     _iface->reset_gpif();
 
     ////////////////////////////////////////////////////////////////////
@@ -549,6 +581,7 @@ b200_impl::b200_impl(const uhd::device_addr_t& device_addr, usb_device_handle::s
     ctrl_xport_args["num_send_frames"] = "16";
 
     // This may throw a uhd::usb_error, which will be caught by b200_make().
+    ALOG("Make usb_zero_copy");
     _ctrl_transport = usb_zero_copy::make(
         handle,
         B200_USB_CTRL_RECV_INTERFACE, B200_USB_CTRL_RECV_ENDPOINT, //interface, endpoint
@@ -561,6 +594,7 @@ b200_impl::b200_impl(const uhd::device_addr_t& device_addr, usb_device_handle::s
     ////////////////////////////////////////////////////////////////////
     // Async task structure
     ////////////////////////////////////////////////////////////////////
+    ALOG("Async task structure");
     _async_task_data.reset(new AsyncTaskData());
     _async_task_data->async_md.reset(new async_md_type(1000/*messages deep*/));
     _async_task = uhd::msg_task::make(boost::bind(&b200_impl::handle_async_task, this, _ctrl_transport, _async_task_data));
@@ -568,6 +602,7 @@ b200_impl::b200_impl(const uhd::device_addr_t& device_addr, usb_device_handle::s
     ////////////////////////////////////////////////////////////////////
     // Local control endpoint
     ////////////////////////////////////////////////////////////////////
+    ALOG("Local control endpoint");
     _local_ctrl = radio_ctrl_core_3000::make(false/*lilE*/, _ctrl_transport, zero_copy_if::sptr()/*null*/, B200_LOCAL_CTRL_SID);
     _local_ctrl->hold_task(_async_task);
     _async_task_data->local_ctrl = _local_ctrl; //weak
@@ -575,6 +610,7 @@ b200_impl::b200_impl(const uhd::device_addr_t& device_addr, usb_device_handle::s
 
     /* Initialize the GPIOs, set the default bandsels to the lower range. Note
      * that calling update_bandsel calls update_gpio_state(). */
+    ALOG("Initialize GPIOs");
     _gpio_state = gpio_state();
     update_bandsel("RX", 800e6);
     update_bandsel("TX", 850e6);
@@ -582,6 +618,7 @@ b200_impl::b200_impl(const uhd::device_addr_t& device_addr, usb_device_handle::s
     ////////////////////////////////////////////////////////////////////
     // Create the GPSDO control
     ////////////////////////////////////////////////////////////////////
+    ALOG("Create GPSDO control");
     if (_gpsdo_capable)
     {
         _async_task_data->gpsdo_uart = b200_uart::make(_ctrl_transport, B200_TX_GPS_UART_SID);
@@ -591,6 +628,7 @@ b200_impl::b200_impl(const uhd::device_addr_t& device_addr, usb_device_handle::s
 
         if ((_local_ctrl->peek32(RB32_CORE_STATUS) & 0xff) != B200_GPSDO_ST_NONE)
         {
+            ALOG("Detecting internal GPSDO....");
             UHD_MSG(status) << "Detecting internal GPSDO.... " << std::flush;
             try
             {
@@ -598,6 +636,9 @@ b200_impl::b200_impl(const uhd::device_addr_t& device_addr, usb_device_handle::s
             }
             catch(std::exception &e)
             {
+                ALOG(boost::str
+                     (boost::format("An error occurred making the GPSDO control: %1%") \
+                      % (e.what())).c_str());
                 UHD_MSG(error) << "An error occurred making GPSDO control: " << e.what() << std::endl;
             }
             if (_gps and _gps->gps_detected())
@@ -619,6 +660,7 @@ b200_impl::b200_impl(const uhd::device_addr_t& device_addr, usb_device_handle::s
     ////////////////////////////////////////////////////////////////////
     // Initialize the properties tree
     ////////////////////////////////////////////////////////////////////
+    ALOG("Initialize properties tree");
     _tree->create<std::string>("/name").set("B-Series Device");
     _tree->create<std::string>(mb_path / "name").set(product_name);
     _tree->create<std::string>(mb_path / "codename").set((_product == B200MINI or _product == B205MINI) ? "Pixie" : "Sasquatch");
@@ -629,6 +671,7 @@ b200_impl::b200_impl(const uhd::device_addr_t& device_addr, usb_device_handle::s
     // be in the FPGAs buffers doesn't get pulled into the transport
     // before being cleared.
     ////////////////////////////////////////////////////////////////////
+    ALOG("Create data transport");
     device_addr_t data_xport_args;
     data_xport_args["recv_frame_size"] = device_addr.get("recv_frame_size", "8192");
     data_xport_args["num_recv_frames"] = device_addr.get("num_recv_frames", "16");
@@ -636,6 +679,7 @@ b200_impl::b200_impl(const uhd::device_addr_t& device_addr, usb_device_handle::s
     data_xport_args["num_send_frames"] = device_addr.get("num_send_frames", "16");
 
     // This may throw a uhd::usb_error, which will be caught by b200_make().
+    ALOG("USB zero copy for data transport");
     _data_transport = usb_zero_copy::make(
         handle,        // identifier
         B200_USB_DATA_RECV_INTERFACE, B200_USB_DATA_RECV_ENDPOINT, //interface, endpoint
@@ -648,6 +692,7 @@ b200_impl::b200_impl(const uhd::device_addr_t& device_addr, usb_device_handle::s
     ////////////////////////////////////////////////////////////////////
     // create time and clock control objects
     ////////////////////////////////////////////////////////////////////
+    ALOG("Create time and clock controls");
     _spi_iface = b200_local_spi_core::make(_local_ctrl);
     if (not (_product == B200MINI or _product == B205MINI)) {
         _adf4001_iface = boost::make_shared<b200_ref_pll_ctrl>(_spi_iface);
@@ -656,6 +701,7 @@ b200_impl::b200_impl(const uhd::device_addr_t& device_addr, usb_device_handle::s
     ////////////////////////////////////////////////////////////////////
     // Init codec - turns on clocks
     ////////////////////////////////////////////////////////////////////
+    ALOG("Init codec");
     UHD_MSG(status) << "Initialize CODEC control..." << std::endl;
     ad9361_params::sptr client_settings;
     if (_product == B200MINI or _product == B205MINI) {
@@ -668,6 +714,7 @@ b200_impl::b200_impl(const uhd::device_addr_t& device_addr, usb_device_handle::s
     ////////////////////////////////////////////////////////////////////
     // create codec control objects
     ////////////////////////////////////////////////////////////////////
+    ALOG("Create codec controls");
     {
         const fs_path codec_path = mb_path / ("rx_codecs") / "A";
         _tree->create<std::string>(codec_path / "name").set(product_name+" RX dual ADC");
@@ -682,6 +729,7 @@ b200_impl::b200_impl(const uhd::device_addr_t& device_addr, usb_device_handle::s
     ////////////////////////////////////////////////////////////////////
     // create clock control objects
     ////////////////////////////////////////////////////////////////////
+    ALOG("Create clock controls");
     _tree->create<double>(mb_path / "tick_rate")
         .coerce(boost::bind(&b200_impl::set_tick_rate, this, _1))
         .publish(boost::bind(&b200_impl::get_tick_rate, this))
@@ -692,12 +740,14 @@ b200_impl::b200_impl(const uhd::device_addr_t& device_addr, usb_device_handle::s
     ////////////////////////////////////////////////////////////////////
     // and do the misc mboard sensors
     ////////////////////////////////////////////////////////////////////
+    ALOG("Misc mboard sensors");
     _tree->create<sensor_value_t>(mb_path / "sensors" / "ref_locked")
         .publish(boost::bind(&b200_impl::get_ref_locked, this));
 
     ////////////////////////////////////////////////////////////////////
     // create frontend mapping
     ////////////////////////////////////////////////////////////////////
+    ALOG("Create frontend mapping");
     std::vector<size_t> default_map(2, 0); default_map[1] = 1; // Set this to A->0 B->1 even if there's only A
     _tree->create<std::vector<size_t> >(mb_path / "rx_chan_dsp_mapping").set(default_map);
     _tree->create<std::vector<size_t> >(mb_path / "tx_chan_dsp_mapping").set(default_map);
@@ -713,6 +763,7 @@ b200_impl::b200_impl(const uhd::device_addr_t& device_addr, usb_device_handle::s
     ////////////////////////////////////////////////////////////////////
     // setup radio control
     ////////////////////////////////////////////////////////////////////
+    ALOG("Setup radio control");
     UHD_MSG(status) << "Initialize Radio control..." << std::endl;
     const size_t num_radio_chains = ((_local_ctrl->peek32(RB32_CORE_STATUS) >> 8) & 0xff);
     UHD_ASSERT_THROW(num_radio_chains > 0);
@@ -725,12 +776,14 @@ b200_impl::b200_impl(const uhd::device_addr_t& device_addr, usb_device_handle::s
 
 
     //now test each radio module's connection to the codec interface
+    ALOG("Test each radio module's connection to codec");
     BOOST_FOREACH(radio_perifs_t &perif, _radio_perifs)
     {
         _codec_mgr->loopback_self_test(perif.ctrl, TOREG(SR_CODEC_IDLE), RB64_CODEC_READBACK);
     }
 
     //register time now and pps onto available radio cores
+    ALOG("Register time now and PPS onto available radio cores");
     _tree->create<time_spec_t>(mb_path / "time" / "now")
         .publish(boost::bind(&time_core_3000::get_time_now, _radio_perifs[0].time64))
         .subscribe(boost::bind(&b200_impl::set_time, this, _1))
@@ -768,6 +821,7 @@ b200_impl::b200_impl(const uhd::device_addr_t& device_addr, usb_device_handle::s
     ////////////////////////////////////////////////////////////////////
     // front panel gpio
     ////////////////////////////////////////////////////////////////////
+    ALOG("Front panel GPIO");
     _radio_perifs[0].fp_gpio = gpio_core_200::make(_radio_perifs[0].ctrl, TOREG(SR_FP_GPIO), RB32_FP_GPIO);
     BOOST_FOREACH(const gpio_attr_map_t::value_type attr, gpio_attr_map)
     {
@@ -781,6 +835,7 @@ b200_impl::b200_impl(const uhd::device_addr_t& device_addr, usb_device_handle::s
     ////////////////////////////////////////////////////////////////////
     // dboard eeproms but not really
     ////////////////////////////////////////////////////////////////////
+    ALOG("DBoard eeproms");
     dboard_eeprom_t db_eeprom;
     _tree->create<dboard_eeprom_t>(mb_path / "dboards" / "A" / "rx_eeprom").set(db_eeprom);
     _tree->create<dboard_eeprom_t>(mb_path / "dboards" / "A" / "tx_eeprom").set(db_eeprom);
@@ -791,6 +846,7 @@ b200_impl::b200_impl(const uhd::device_addr_t& device_addr, usb_device_handle::s
     ////////////////////////////////////////////////////////////////////
 
     //init the clock rate to something reasonable
+    ALOG("Init clock info");
     double default_tick_rate = device_addr.cast<double>("master_clock_rate", ad936x_manager::DEFAULT_TICK_RATE);
     _tree->access<double>(mb_path / "tick_rate").set(default_tick_rate);
 
@@ -812,6 +868,7 @@ b200_impl::b200_impl(const uhd::device_addr_t& device_addr, usb_device_handle::s
     _tree->access<std::string>(mb_path / "time_source/value").set("internal");
 
     // Set the DSP chains to some safe value
+    ALOG("Set default rates");
     for (size_t i = 0; i < _radio_perifs.size(); i++) {
         _radio_perifs[i].ddc->set_host_rate(default_tick_rate / ad936x_manager::DEFAULT_DECIM);
         _radio_perifs[i].duc->set_host_rate(default_tick_rate / ad936x_manager::DEFAULT_INTERP);
@@ -821,6 +878,8 @@ b200_impl::b200_impl(const uhd::device_addr_t& device_addr, usb_device_handle::s
     if (not device_addr.has_key("master_clock_rate")) {
         UHD_MSG(status) << "Setting master clock rate selection to 'automatic'." << std::endl;
     }
+
+    ALOG("B200 Implementation setup DONE");
 }
 
 b200_impl::~b200_impl(void)
@@ -1032,9 +1091,15 @@ double b200_impl::set_tick_rate(const double new_tick_rate)
 
 void b200_impl::check_fw_compat(void)
 {
+    ALOG("Firmware Compat Check");
     boost::uint16_t compat_num = _iface->get_compat_num();
     boost::uint32_t compat_major = (boost::uint32_t) (compat_num >> 8);
     boost::uint32_t compat_minor = (boost::uint32_t) (compat_num & 0xFF);
+
+    std::string msg = str(boost::format("Firmware compatibility number %d.%d; got %d.%d\n")
+                          % int(B200_FW_COMPAT_NUM_MAJOR) % int(B200_FW_COMPAT_NUM_MINOR)
+                          % compat_major % compat_minor);
+    ALOG(msg.c_str());
 
     if (compat_major != B200_FW_COMPAT_NUM_MAJOR){
         throw uhd::runtime_error(str(boost::format(
@@ -1050,6 +1115,7 @@ void b200_impl::check_fw_compat(void)
 
 void b200_impl::check_fpga_compat(void)
 {
+    ALOG("FPGA Compat Check");
     const boost::uint64_t compat = _local_ctrl->peek64(0);
     const boost::uint32_t signature = boost::uint32_t(compat >> 32);
     const boost::uint16_t compat_major = boost::uint16_t(compat >> 16);
@@ -1058,6 +1124,10 @@ void b200_impl::check_fpga_compat(void)
         "b200::check_fpga_compat signature register readback failed");
 
     const boost::uint16_t expected = ((_product == B200MINI or _product == B205MINI) ? B205_FPGA_COMPAT_NUM : B200_FPGA_COMPAT_NUM);
+
+    std::string msg = str(boost::format("FPGA compatibility number %d; got %d\n")
+                          % int(expected) % compat_major);
+    ALOG(msg.c_str());
 
     if (compat_major != expected)
     {
