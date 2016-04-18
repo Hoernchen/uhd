@@ -54,7 +54,11 @@ static const uhd::dict<boost::uint16_t, b200_product_t> B2XX_PID_TO_PRODUCT = bo
         (B205MINI_PRODUCT_ID,   B205MINI)
 ;
 
+#if ANDROID
+static const std::string     B200_FW_FILE_NAME = "/sdcard/usrp_b200_fw.hex";
+#else
 static const std::string     B200_FW_FILE_NAME = "usrp_b200_fw.hex";
+#endif
 
 //! Map the EEPROM product ID codes to the product
 static const uhd::dict<boost::uint16_t, b200_product_t> B2XX_PRODUCT_ID = boost::assign::map_list_of
@@ -78,11 +82,19 @@ static const uhd::dict<b200_product_t, std::string> B2XX_STR_NAMES = boost::assi
         (B205MINI,  "B205mini")
 ;
 
+#if ANDROID
+static const uhd::dict<b200_product_t, std::string> B2XX_FPGA_FILE_NAME = boost::assign::map_list_of
+        (B200, "/sdcard/usrp_b200_fpga.bin")
+        (B210, "/sdcard/usrp_b210_fpga.bin")
+        (B200MINI, "/sdcard/usrp_b200mini_fpga.bin")
+        (B205MINI, "/sdcard/usrp_b205mini_fpga.bin")
+#else
 static const uhd::dict<b200_product_t, std::string> B2XX_FPGA_FILE_NAME = boost::assign::map_list_of
         (B200, "usrp_b200_fpga.bin")
         (B210, "usrp_b210_fpga.bin")
         (B200MINI, "usrp_b200mini_fpga.bin")
         (B205MINI, "usrp_b205mini_fpga.bin")
+#endif
 ;
 
 

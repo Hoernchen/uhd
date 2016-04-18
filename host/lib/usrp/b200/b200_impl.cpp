@@ -45,6 +45,12 @@ using namespace uhd::transport;
 
 static const boost::posix_time::milliseconds REENUMERATION_TIMEOUT_MS(3000);
 
+usb_control::sptr get_usb_control(usb_device_handle::sptr handle)
+{
+    static usb_control::sptr _control = usb_control::make(handle, 0);
+    return _control;
+}
+
 // B200 + B210:
 class b200_ad9361_client_t : public ad9361_params {
 public:
@@ -152,9 +158,23 @@ std::vector<usb_device_handle::sptr> get_b200_device_handles(const device_addr_t
 
     if(hint.has_key("vid") && hint.has_key("pid") && hint.has_key("type") && hint["type"] == "b200") {
         vid_pid_pair_list.push_back(usb_device_handle::vid_pid_pair_t(uhd::cast::hexstr_cast<boost::uint16_t>(hint.get("vid")),
-                                                                      uhd::cast::hexstr_cast<boost::uint16_t>(hint.get("pid"))));
+                                                                      uhd::cast::hexstr_cast<boost::uint16_t>(hint.get("pid"))
+
+#if ANDROID
+                                                                      ,boost::lexical_cast<int>(hint.get("fd")),
+                                                                      hint.get("usbfs_path")
+#endif
+                                                                      ));
     } else {
+#if ANDROID
+        vid_pid_pair_list.push_back(usb_device_handle::vid_pid_pair_t(B200_VENDOR_ID, B200_PRODUCT_ID, boost::lexical_cast<int>(hint.get("fd")), hint.get("usbfs_path")));
+        vid_pid_pair_list.push_back(usb_device_handle::vid_pid_pair_t(B200_VENDOR_ID, B200MINI_PRODUCT_ID, boost::lexical_cast<int>(hint.get("fd")), hint.get("usbfs_path")));
+        vid_pid_pair_list.push_back(usb_device_handle::vid_pid_pair_t(B200_VENDOR_ID, B205MINI_PRODUCT_ID, boost::lexical_cast<int>(hint.get("fd")), hint.get("usbfs_path")));
+        vid_pid_pair_list.push_back(usb_device_handle::vid_pid_pair_t(B200_VENDOR_NI_ID, B200_PRODUCT_NI_ID, boost::lexical_cast<int>(hint.get("fd")), hint.get("usbfs_path")));
+        vid_pid_pair_list.push_back(usb_device_handle::vid_pid_pair_t(B200_VENDOR_NI_ID, B210_PRODUCT_NI_ID, boost::lexical_cast<int>(hint.get("fd")), hint.get("usbfs_path")));
+#else
         vid_pid_pair_list = b200_vid_pid_pairs;
+#endif
     }
 
     //find the usrps and load firmware
@@ -174,6 +194,11 @@ static device_addrs_t b200_find(const device_addr_t &hint)
         if (hint_i.has_key("addr") || hint_i.has_key("resource")) return b200_addrs;
     }
 
+#if ANDROID
+    // return an empty list of addresses when fd and usbfs_path not specified
+    if(!hint.has_key("fd") || !hint.has_key("usbfs_path")) return b200_addrs;
+#endif
+
     // Important note:
     // The get device list calls are nested inside the for loop.
     // This allows the usb guts to decontruct when not in use,
@@ -181,6 +206,7 @@ static device_addrs_t b200_find(const device_addr_t &hint)
     // This requirement is a courtesy of libusb1.0 on windows.
     size_t found = 0;
     BOOST_FOREACH(usb_device_handle::sptr handle, get_b200_device_handles(hint)) {
+#if !ANDROID
         //extract the firmware path for the b200
         std::string b200_fw_image;
         try{
@@ -196,10 +222,29 @@ static device_addrs_t b200_find(const device_addr_t &hint)
         usb_control::sptr control;
         try{control = usb_control::make(handle, 0);}
         catch(const uhd::exception &){continue;} //ignore claimed
+#endif
 
         //check if fw was already loaded
         if (!(handle->firmware_loaded()))
         {
+#if ANDROID
+          //extract the firmware path for the b200
+            std::string b200_fw_image;
+            try{
+                b200_fw_image = hint.get("fw", B200_FW_FILE_NAME);
+                b200_fw_image = uhd::find_image_path(b200_fw_image);
+            }
+            catch(uhd::exception &e){
+                UHD_MSG(warning) << e.what();
+                return b200_addrs;
+            }
+            UHD_LOG << "the firmware image: " << b200_fw_image << std::endl;
+
+            usb_control::sptr control;
+            try{control = usb_control::make(handle, 0);}
+            catch(const uhd::exception &){continue;} //ignore claimed
+#endif
+
             b200_iface::make(control)->load_firmware(b200_fw_image);
         }
 
@@ -294,6 +339,10 @@ b200_impl::b200_impl(const uhd::device_addr_t& device_addr, usb_device_handle::s
     boost::uint16_t pid = B200_PRODUCT_ID;
     bool specified_vid = false;
     bool specified_pid = false;
+#if ANDROID
+    int fd = 0;
+    std::string usbfs_path = "";
+#endif
 
     if (device_addr.has_key("vid"))
     {
@@ -307,36 +356,76 @@ b200_impl::b200_impl(const uhd::device_addr_t& device_addr, usb_device_handle::s
         specified_pid = true;
     }
 
+#if ANDROID
+    if(device_addr.has_key("fd")) {
+        fd = boost::lexical_cast<int>(device_addr.get("fd"));
+    } else {
+        throw uhd::runtime_error("fd needs to be specified for B2xx devices");
+    }
+
+    if(device_addr.has_key("usbfs_path")) {
+        usbfs_path = device_addr.get("usbfs_path");
+    } else {
+        throw uhd::runtime_error("usbfs_path needs to be specified for B2xx devices");
+    }
+#endif
+
     std::vector<usb_device_handle::vid_pid_pair_t> vid_pid_pair_list;//search list for devices.
 
     // Search only for specified VID and PID if both specified
     if (specified_vid && specified_pid)
     {
-        vid_pid_pair_list.push_back(usb_device_handle::vid_pid_pair_t(vid,pid));
+        vid_pid_pair_list.push_back(usb_device_handle::vid_pid_pair_t(vid,pid
+#if ANDROID
+                                                                      ,fd,usbfs_path
+#endif
+                                                                      ));
+
     }
     // Search for all supported PIDs limited to specified VID if only VID specified
     else if (specified_vid)
     {
+#if ANDROID
+        vid_pid_pair_list.push_back(usb_device_handle::vid_pid_pair_t(vid, B200_PRODUCT_ID,fd,usbfs_path));
+        vid_pid_pair_list.push_back(usb_device_handle::vid_pid_pair_t(vid, B200MINI_PRODUCT_ID,fd,usbfs_path));
+        vid_pid_pair_list.push_back(usb_device_handle::vid_pid_pair_t(vid, B205MINI_PRODUCT_ID,fd,usbfs_path));
+        vid_pid_pair_list.push_back(usb_device_handle::vid_pid_pair_t(vid, B200_PRODUCT_NI_ID,fd,usbfs_path));
+        vid_pid_pair_list.push_back(usb_device_handle::vid_pid_pair_t(vid, B210_PRODUCT_NI_ID,fd,usbfs_path));
+#else
         vid_pid_pair_list.push_back(usb_device_handle::vid_pid_pair_t(vid, B200_PRODUCT_ID));
         vid_pid_pair_list.push_back(usb_device_handle::vid_pid_pair_t(vid, B200MINI_PRODUCT_ID));
         vid_pid_pair_list.push_back(usb_device_handle::vid_pid_pair_t(vid, B205MINI_PRODUCT_ID));
         vid_pid_pair_list.push_back(usb_device_handle::vid_pid_pair_t(vid, B200_PRODUCT_NI_ID));
         vid_pid_pair_list.push_back(usb_device_handle::vid_pid_pair_t(vid, B210_PRODUCT_NI_ID));
+#endif
     }
     // Search for all supported VIDs limited to specified PID if only PID specified
     else if (specified_pid)
     {
+#if ANDROID
+        vid_pid_pair_list.push_back(usb_device_handle::vid_pid_pair_t(B200_VENDOR_ID,pid,fd,usbfs_path));
+        vid_pid_pair_list.push_back(usb_device_handle::vid_pid_pair_t(B200_VENDOR_NI_ID,pid,fd,usbfs_path));
+#else
         vid_pid_pair_list.push_back(usb_device_handle::vid_pid_pair_t(B200_VENDOR_ID,pid));
         vid_pid_pair_list.push_back(usb_device_handle::vid_pid_pair_t(B200_VENDOR_NI_ID,pid));
+#endif
     }
     // Search for all supported devices if neither VID nor PID specified
     else
     {
+#if ANDROID
+        vid_pid_pair_list.push_back(usb_device_handle::vid_pid_pair_t(B200_VENDOR_ID,    B200_PRODUCT_ID,fd,usbfs_path));
+        vid_pid_pair_list.push_back(usb_device_handle::vid_pid_pair_t(B200_VENDOR_ID,    B200MINI_PRODUCT_ID,fd,usbfs_path));
+        vid_pid_pair_list.push_back(usb_device_handle::vid_pid_pair_t(B200_VENDOR_ID,    B205MINI_PRODUCT_ID,fd,usbfs_path));
+        vid_pid_pair_list.push_back(usb_device_handle::vid_pid_pair_t(B200_VENDOR_NI_ID, B200_PRODUCT_NI_ID,fd,usbfs_path));
+        vid_pid_pair_list.push_back(usb_device_handle::vid_pid_pair_t(B200_VENDOR_NI_ID, B210_PRODUCT_NI_ID,fd,usbfs_path));
+#else
         vid_pid_pair_list.push_back(usb_device_handle::vid_pid_pair_t(B200_VENDOR_ID,    B200_PRODUCT_ID));
         vid_pid_pair_list.push_back(usb_device_handle::vid_pid_pair_t(B200_VENDOR_ID,    B200MINI_PRODUCT_ID));
         vid_pid_pair_list.push_back(usb_device_handle::vid_pid_pair_t(B200_VENDOR_ID,    B205MINI_PRODUCT_ID));
         vid_pid_pair_list.push_back(usb_device_handle::vid_pid_pair_t(B200_VENDOR_NI_ID, B200_PRODUCT_NI_ID));
         vid_pid_pair_list.push_back(usb_device_handle::vid_pid_pair_t(B200_VENDOR_NI_ID, B210_PRODUCT_NI_ID));
+#endif
     }
 
     std::vector<usb_device_handle::sptr> device_list = usb_device_handle::get_device_list(vid_pid_pair_list);
@@ -355,6 +444,17 @@ b200_impl::b200_impl(const uhd::device_addr_t& device_addr, usb_device_handle::s
     //create control objects
     usb_control::sptr control = usb_control::make(handle, 0);
     _iface = b200_iface::make(control);
+
+#if ANDROID
+    ////////////////////////////////////////////////////////////////////
+    // load the device firmware
+    ////////////////////////////////////////////////////////////////////
+    std::string b200_fw_image = B200_FW_FILE_NAME;
+    if(!(handle->firmware_loaded())) {
+      _iface->load_firmware(b200_fw_image);
+    }
+#endif
+
     this->check_fw_compat(); //check after making
 
     ////////////////////////////////////////////////////////////////////
@@ -419,9 +519,13 @@ b200_impl::b200_impl(const uhd::device_addr_t& device_addr, usb_device_handle::s
     // Load the FPGA image, then reset GPIF
     ////////////////////////////////////////////////////////////////////
     //extract the FPGA path for the B200
+#if ANDROID
+    std::string b200_fpga_image = device_addr.has_key("fpga")? device_addr["fpga"] : default_file_name;
+#else
     std::string b200_fpga_image = find_image_path(
         device_addr.has_key("fpga")? device_addr["fpga"] : default_file_name
     );
+#endif
 
     boost::uint32_t status = _iface->load_fpga(b200_fpga_image);
 
@@ -471,6 +575,7 @@ b200_impl::b200_impl(const uhd::device_addr_t& device_addr, usb_device_handle::s
 
     /* Initialize the GPIOs, set the default bandsels to the lower range. Note
      * that calling update_bandsel calls update_gpio_state(). */
+    _gpio_state = gpio_state();
     update_bandsel("RX", 800e6);
     update_bandsel("TX", 850e6);
 
@@ -716,7 +821,6 @@ b200_impl::b200_impl(const uhd::device_addr_t& device_addr, usb_device_handle::s
     if (not device_addr.has_key("master_clock_rate")) {
         UHD_MSG(status) << "Setting master clock rate selection to 'automatic'." << std::endl;
     }
-
 }
 
 b200_impl::~b200_impl(void)
@@ -954,6 +1058,7 @@ void b200_impl::check_fpga_compat(void)
         "b200::check_fpga_compat signature register readback failed");
 
     const boost::uint16_t expected = ((_product == B200MINI or _product == B205MINI) ? B205_FPGA_COMPAT_NUM : B200_FPGA_COMPAT_NUM);
+
     if (compat_major != expected)
     {
         throw uhd::runtime_error(str(boost::format(

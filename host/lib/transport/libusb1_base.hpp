@@ -96,6 +96,11 @@ namespace libusb {
 
         //! get the underlying device pointer
         virtual libusb_device *get(void) const = 0;
+
+#if ANDROID
+        virtual int get_fd() const = 0;
+        virtual void set_fd(int fd) = 0;
+#endif
     };
 
     /*!
@@ -175,7 +180,11 @@ namespace libusb {
         virtual ~special_handle(void) = 0;
 
         //! make a new special handle from device
+#if ANDROID
+        static sptr make(device::sptr, int fd);
+#else
         static sptr make(device::sptr);
+#endif
 
         //! get the underlying device reference
         virtual device::sptr get_device(void) const = 0;

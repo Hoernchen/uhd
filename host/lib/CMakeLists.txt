@@ -138,7 +138,11 @@ ENDIF(MSVC)
 # Setup libuhd library
 ########################################################################
 ADD_LIBRARY(uhd SHARED ${libuhd_sources})
-TARGET_LINK_LIBRARIES(uhd ${Boost_LIBRARIES} ${libuhd_libs})
+IF(NOT ANDROID)
+  TARGET_LINK_LIBRARIES(uhd ${Boost_LIBRARIES} ${libuhd_libs})
+ELSE(NOT ANDROID)
+  TARGET_LINK_LIBRARIES(uhd ${Boost_LIBRARIES} ${libuhd_libs} log)
+ENDIF(NOT ANDROID)
 SET_TARGET_PROPERTIES(uhd PROPERTIES DEFINE_SYMBOL "UHD_DLL_EXPORTS")
 IF(NOT LIBUHDDEV_PKG)
     SET_TARGET_PROPERTIES(uhd PROPERTIES SOVERSION "${UHD_VERSION_MAJOR}")

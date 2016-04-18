@@ -24,6 +24,10 @@
 #include <boost/cstdint.hpp>
 #include <vector>
 
+#if ANDROID
+#include <boost/tuple/tuple.hpp>
+#endif
+
 namespace uhd { namespace transport {
 
 /*!
@@ -41,7 +45,11 @@ namespace uhd { namespace transport {
 class UHD_API usb_device_handle : boost::noncopyable {
 public:
     typedef boost::shared_ptr<usb_device_handle> sptr;
+#if ANDROID
+    typedef boost::tuple<boost::uint16_t, boost::uint16_t, boost::int32_t, std::string> vid_pid_pair_t;
+#else
     typedef std::pair<boost::uint16_t, boost::uint16_t> vid_pid_pair_t;
+#endif
 
     /*!
      * Return the device's serial number
@@ -83,7 +91,12 @@ public:
      * Return a vector of USB devices on this host
      * \return a vector of USB device handles that match vid and pid
      */
+#if ANDROID
+    virtual int get_fd() const = 0;
+    static std::vector<usb_device_handle::sptr> get_device_list(boost::uint16_t vid, boost::uint16_t pid, int fd, std::string usbfs_path);
+#else
     static std::vector<usb_device_handle::sptr> get_device_list(boost::uint16_t vid, boost::uint16_t pid);
+#endif
     static std::vector<usb_device_handle::sptr> get_device_list(const std::vector<usb_device_handle::vid_pid_pair_t>& vid_pid_pair_list);
 
 
