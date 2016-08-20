@@ -42,12 +42,7 @@ libusb::session::~session(void) {
 class libusb_session_impl : public libusb::session{
 public:
     libusb_session_impl(void){
-#if ANDROID
-        // Assumes this is the right device name -- seems to always be so
-        UHD_ASSERT_THROW(libusb_init2(&_context, "/dev/bus/usb") == 0);
-#else
         UHD_ASSERT_THROW(libusb_init(&_context) == 0);
-#endif
         libusb_set_debug(_context, debug_level);
         task_handler = task::make(boost::bind(&libusb_session_impl::libusb_event_handler_task, this, _context));
     }
@@ -260,11 +255,7 @@ class libusb_device_handle_impl : public libusb::device_handle{
 public:
     libusb_device_handle_impl(libusb::device::sptr dev){
         _dev = dev;
-#if ANDROID
-        UHD_ASSERT_THROW(libusb_open2(_dev->get(), &_handle, _dev->get_fd()) == 0);
-#else
         UHD_ASSERT_THROW(libusb_open(_dev->get(), &_handle) == 0);
-#endif
     }
 
     ~libusb_device_handle_impl(void){
